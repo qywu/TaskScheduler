@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<table id="data" class="hover order-column row-border">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Uptime</th>
+      <th>Path</th>
+      <th>Command</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+  </tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  $(document).ready(function () {
+    var table = $('#data').DataTable({
+      ajax: '/api/update_table',
+      serverSide: true,
+      processing: false,
+      columns: [
+        { data: 'ID' },
+        { data: 'uptime' },
+        { data: 'path' },
+        { data: 'command' },
+        { data: 'status' },
+      ]
+    });
+  });
+
+  setInterval(function () {
+    $('#data').DataTable().ajax.reload();
+  }, 1000);
+</script>
+{% endblock %}
