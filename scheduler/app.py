@@ -240,4 +240,4 @@ if __name__ == '__main__':
     scheduler.daemon = True
     scheduler.start()
     time.sleep(0.5)
-    app.run(port=18812)
+    app.run(host="0.0.0.0", port=18812)
