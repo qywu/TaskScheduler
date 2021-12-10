@@ -92,7 +92,10 @@ class Scheduler(Thread):
         super().__init__()
         self.max_num_gpus = 8
         output_files = glob.glob(os.path.join(os.path.dirname(__file__), "outputs/*.log"))
-        self._job_count = max([int(file.split("/")[-1].split(".")[0]) for file in output_files])
+        if len(output_files) > 0:
+            self._job_count = max([int(file.split("/")[-1].split(".")[0]) for file in output_files])
+        else:
+            self._job_count = 0
         
         self.used_gpus = set()
         self.tasks = []
