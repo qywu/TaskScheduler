@@ -1,4 +1,5 @@
 import os
+import glob
 import time
 import datetime
 import psutil
@@ -23,6 +24,7 @@ class STATUS:
     RUNNING = 1
     DONE = 2
     ERROR = 3
+    CLOSED = 4
 
 
 class Task:
@@ -45,10 +47,11 @@ class Task:
         self.proc = None
         self.status = STATUS.WAITING
         self.uptime = "N/A"
+        self.used_gpus = set()
 
         if output_path is None:
             os.makedirs("outputs", exist_ok=True)
-            self.output_path = f"outputs/{self.job_id}.txt"
+            self.output_path = f"outputs/{self.job_id}.log"
 
     def poll(self):
         if self.proc is not None:
@@ -61,20 +64,37 @@ class Task:
         self.file_stream = open(self.output_path, "w")
         cwd = os.getcwd()
         os.chdir(self.path)
-        self.proc = subprocess.Popen(self.command, stdout=self.file_stream, shell=True)
+        self.proc = subprocess.Popen(self.command, stdout=self.file_stream, stderr=self.file_stream, shell=True)
         os.chdir(cwd)
 
     def close(self):
         if self.proc.poll() is None:
             raise ValueError("Process not done yet!")
+        else:
+            self.proc = None
+            self.used_gpus = set()
 
+    def check_status(self):
+        res = self.proc.poll() if self.proc is not None else None
+        if res is None:
+            return self.status
+        elif res == 0:
+            self.status = STATUS.DONE
+            logger.info(f"Task {self.job_id} is done!")
+        elif res > 0:
+            self.status = STATUS.ERROR
+            logger.error(f"Task {self.job_id} has error!")
+        return self.status
 
 class Scheduler(Thread):
 
     def __init__(self) -> None:
         super().__init__()
         self.max_num_gpus = 8
-        self._job_count = 0
+        output_files = glob.glob(os.path.join(os.path.dirname(__file__), "outputs/*.log"))
+        self._job_count = max([int(file.split("/")[-1].split(".")[0]) for file in output_files])
+        
+        self.used_gpus = set()
         self.tasks = []
 
     def run(self):
@@ -88,6 +108,7 @@ class Scheduler(Thread):
                                             includeNan=False,
                                             excludeID=[],
                                             excludeUUID=[])
+            deviceIDs = list(set(deviceIDs) - self.used_gpus)
 
             if len(self.tasks) < 1:
                 logger.info("No task is in the pool!")
@@ -113,6 +134,8 @@ class Scheduler(Thread):
                     logger.info(f"GPU {deviceIDs} are available! Selecting the first one.")
                     os.environ["CUDA_VISIBLE_DEVICES"] = str(deviceIDs[0])
                     logger.info("Running task!")
+                    self.used_gpus.add(deviceIDs[0])
+                    task.used_gpus.add(deviceIDs[0])
                     task.run()
                     # give the command at least 30 seconds before running the next experiment
                     time.sleep(task.delay)
@@ -120,16 +143,9 @@ class Scheduler(Thread):
 
             # check all tasks statues
             for task in self.tasks:
-                res = task.poll()
-                if res is None:
-                    continue
-                elif res == 0:
-                    task.status = STATUS.DONE
-                    logger.info(f"Task {task.job_id} is done!")
-                    task.close()
-                elif res > 0:
-                    task.status = STATUS.ERROR
-                    logger.error(f"Task {task.job_id} has error!")
+                status = task.check_status()
+                if status == STATUS.DONE or status == STATUS.ERROR:
+                    self.used_gpus -= task.used_gpus
                     task.close()
 
                 # if len(tasks) > 0 and task_flag == False:
