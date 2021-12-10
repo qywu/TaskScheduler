@@ -6,9 +6,11 @@
     <tr>
       <th>ID</th>
       <th>Uptime</th>
+      <th>GPUs</th>
       <th>Path</th>
       <th>Command</th>
       <th>Status</th>
+      <th>Outputs</th>
     </tr>
   </thead>
   <tbody>
@@ -26,11 +28,33 @@
       columns: [
         { data: 'ID' },
         { data: 'uptime' },
+        { data: 'gpus' },
         { data: 'path' },
         { data: 'command' },
         { data: 'status' },
+        { data: null }
+      ],
+      columnDefs: [
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+                // button column
+        { 
+          "targets": -1,
+          "data": null,
+          "defaultContent": "<button>view</button>"
+        }
       ]
     });
+
+    $('#data tbody').on('click', 'button', function () {
+        var data = table.row( $(this).parents('tr') ).data();
+        // alert( data["ID"] +"'s salary is: " );
+        window.location.replace( "/view_log/" + data["ID"])
+    } );
   });
 
   setInterval(function () {

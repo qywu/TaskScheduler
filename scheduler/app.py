@@ -68,7 +68,9 @@ class Task:
         os.chdir(cwd)
 
     def close(self):
-        if self.proc.poll() is None:
+        if self.proc is None:
+            logger.warning("Task is not started yet!")
+        elif self.proc is not None and self.proc.poll() is None:
             raise ValueError("Process not done yet!")
         else:
             self.proc = None
@@ -134,11 +136,15 @@ class Scheduler(Thread):
             for task in self.tasks:
                 if task.status == STATUS.WAITING and task.num_gpus <= len(deviceIDs):
                     # execute the task if can be run
-                    logger.info(f"GPU {deviceIDs} are available! Selecting the first one.")
-                    os.environ["CUDA_VISIBLE_DEVICES"] = str(deviceIDs[0])
+                    if task.num_gpus > 0:
+                        logger.info(f"GPU {deviceIDs} are available! Selecting the first one.")
+                        os.environ["CUDA_VISIBLE_DEVICES"] = str(deviceIDs[0])
+                        self.used_gpus.add(deviceIDs[0])
+                        task.used_gpus.add(deviceIDs[0])
+
                     logger.info("Running task!")
-                    self.used_gpus.add(deviceIDs[0])
-                    task.used_gpus.add(deviceIDs[0])
+                    
+                    
                     task.run()
                     # give the command at least 30 seconds before running the next experiment
                     time.sleep(task.delay)
@@ -146,10 +152,11 @@ class Scheduler(Thread):
 
             # check all tasks statues
             for task in self.tasks:
-                status = task.check_status()
-                if status == STATUS.DONE or status == STATUS.ERROR:
-                    self.used_gpus -= task.used_gpus
-                    task.close()
+                if task.status != STATUS.DONE and task.status != STATUS.ERROR:
+                    status = task.check_status()
+                    if status == STATUS.DONE or status == STATUS.ERROR:
+                        self.used_gpus -= task.used_gpus
+                        task.close()
 
                 # if len(tasks) > 0 and task_flag == False:
                 #     logger.info("No")
@@ -187,9 +194,12 @@ class Scheduler(Thread):
                 except:
                     task.proc = None
 
+            used_gpus = str(list(task.used_gpus))[1:-1]
+
             item = {
                 "ID": task.job_id,
                 "uptime": task.uptime,
+                "gpus": used_gpus,
                 "path": task.path,
                 "command": task.command,
                 "status": status,
@@ -201,6 +211,12 @@ class Scheduler(Thread):
 @app.route('/')
 def index():
     return render_template('server_table.html', title='Workload Manager')
+
+@app.route('/view_log/<job_id>')
+def read_log(job_id):
+    with open(f"outputs/{job_id}.log") as f:
+        data = f.read()
+    return render_template('log.html', title='Workload Manager', content=data)
 
 
 @app.route('/api/update_table')
