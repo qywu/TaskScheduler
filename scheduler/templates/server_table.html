@@ -58,7 +58,7 @@
   });
 
   setInterval(function () {
-    $('#data').DataTable().ajax.reload();
+    $('#data').DataTable().ajax.reload(null,false);
   }, 1000);
 </script>
 {% endblock %}

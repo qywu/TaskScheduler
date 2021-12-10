@@ -48,10 +48,11 @@ class Task:
         self.status = STATUS.WAITING
         self.uptime = "N/A"
         self.used_gpus = set()
+        self.start_time = None
 
         if output_path is None:
             os.makedirs("outputs", exist_ok=True)
-            self.output_path = f"outputs/{self.job_id}.log"
+            self.output_path = os.path.join(os.path.dirname(__file__), f"outputs/{self.job_id}.log")
 
     def poll(self):
         if self.proc is not None:
@@ -66,6 +67,10 @@ class Task:
         os.chdir(self.path)
         self.proc = subprocess.Popen(self.command, stdout=self.file_stream, stderr=self.file_stream, shell=True)
         os.chdir(cwd)
+
+        pid = self.proc.pid
+        p = psutil.Process(pid)
+        self.start_time = p.create_time()
 
     def close(self):
         if self.proc is None:
@@ -186,9 +191,7 @@ class Scheduler(Thread):
             # get uptime
             if task.proc != None:
                 try:
-                    pid = task.proc.pid
-                    p = psutil.Process(pid)
-                    start_time = p.create_time()
+                    start_time = task.start_time
                     diff_time = time.time() - start_time
                     task.uptime = str(datetime.timedelta(seconds=int(diff_time)))
                 except:
@@ -207,6 +210,14 @@ class Scheduler(Thread):
             stats.append(item)
         return stats
 
+    def cleanup(self):
+        "Remove finished tasks"
+        new_tasks = []
+        for task in self.tasks:
+            if task.status != STATUS.DONE and task.status != STATUS.ERROR:
+                new_tasks.append(task)
+        self.tasks = new_tasks
+
 
 @app.route('/')
 def index():
@@ -214,9 +225,15 @@ def index():
 
 @app.route('/view_log/<job_id>')
 def read_log(job_id):
-    with open(f"outputs/{job_id}.log") as f:
+    with open(os.path.join(os.path.dirname(__file__), f"outputs/{job_id}.log")) as f:
         data = f.read()
     return render_template('log.html', title='Workload Manager', content=data)
+
+
+@app.route('/cleanup')
+def cleanup():
+    scheduler.cleanup()
+    return "Done"
 
 
 @app.route('/api/update_table')
