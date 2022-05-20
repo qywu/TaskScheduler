@@ -2,6 +2,8 @@ import os
 import glob
 import time
 import datetime
+from matplotlib.style import available
+from omegaconf import OmegaConf
 import psutil
 import subprocess
 import random
@@ -9,13 +11,16 @@ from threading import Thread
 import logging
 
 import GPUtil
-from flask import Flask, render_template, request
+
+from flask import Flask, render_template, request, flash, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 
 logger = logging.getLogger(__name__)
-app = Flask(__name__)
-logging.basicConfig(format='%(process)d-%(levelname)s-%(message)s', level=logging.INFO)
-log = logging.getLogger('werkzeug')
+app = Flask(__name__, static_url_path="/static")
+app.secret_key = b'_5#y2L"F4Q8z\n\xec]/'
+
+logging.basicConfig(format="%(process)d-%(levelname)s-%(message)s", level=logging.INFO)
+log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
 
@@ -28,15 +33,9 @@ class STATUS:
 
 
 class Task:
-
-    def __init__(self,
-                 job_id,
-                 path,
-                 command,
-                 num_gpus=0,
-                 delay=0,
-                 min_gpu_memory=None,
-                 output_path: str = None) -> None:
+    def __init__(
+        self, job_id, path, command, num_gpus=0, delay=0, min_gpu_memory=None, output_path: str = None
+    ) -> None:
         self.num_gpus = num_gpus
         self.path = path
         self.command = command
@@ -93,33 +92,28 @@ class Task:
             logger.error(f"Task {self.job_id} has error!")
         return self.status
 
-class Scheduler(Thread):
 
+class Scheduler(Thread):
     def __init__(self) -> None:
         super().__init__()
-        self.max_num_gpus = 8
+        self.max_num_gpus = len(GPUtil.getGPUs())
         output_files = glob.glob(os.path.join(os.path.dirname(__file__), "outputs/*.log"))
         if len(output_files) > 0:
             self._job_count = max([int(file.split("/")[-1].split(".")[0]) for file in output_files])
         else:
             self._job_count = 0
-        
+
         self.used_gpus = set()
         self.tasks = []
 
+        # Update GPU information
+        gpus = GPUtil.getGPUs()
+        self.enabled_gpus = {}
+        for gpu in gpus:
+            self.enabled_gpus[int(gpu.id)] = True
+
     def run(self):
         while True:
-            # iterate through all gpus
-            # GPUs = GPUtil.getGPUs()
-            deviceIDs = GPUtil.getAvailable(order='random',
-                                            limit=8,
-                                            maxLoad=0.2,
-                                            maxMemory=0.5,
-                                            includeNan=False,
-                                            excludeID=[],
-                                            excludeUUID=[])
-            deviceIDs = list(set(deviceIDs) - self.used_gpus)
-
             if len(self.tasks) < 1:
                 logger.info("No task is in the pool!")
 
@@ -139,17 +133,23 @@ class Scheduler(Thread):
 
             # loop over satisfied tasks
             for task in self.tasks:
-                if task.status == STATUS.WAITING and task.num_gpus <= len(deviceIDs):
+                gpus = GPUtil.getGPUs()
+                avail_gpus = []
+                for gpu in gpus:
+                    if gpu.memoryFree > task.min_gpu_memory:
+                        avail_gpus.append(gpu)
+
+                if task.status == STATUS.WAITING and task.num_gpus <= len(avail_gpus):
                     # execute the task if can be run
                     if task.num_gpus > 0:
-                        logger.info(f"GPU {deviceIDs} are available! Selecting the first one.")
-                        os.environ["CUDA_VISIBLE_DEVICES"] = str(deviceIDs[0])
-                        self.used_gpus.add(deviceIDs[0])
-                        task.used_gpus.add(deviceIDs[0])
+                        gpu_ids = [gpu.id for gpu in avail_gpus]
+                        logger.info(f"GPU {gpu_ids} are available! Selecting the first one.")
+                        os.environ["CUDA_VISIBLE_DEVICES"] = str(avail_gpus[0].id)
+                        self.used_gpus.add(avail_gpus[0])
+                        task.used_gpus.add(avail_gpus[0])
 
                     logger.info("Running task!")
-                    
-                    
+
                     task.run()
                     # give the command at least 30 seconds before running the next experiment
                     time.sleep(task.delay)
@@ -163,15 +163,18 @@ class Scheduler(Thread):
                         self.used_gpus -= task.used_gpus
                         task.close()
 
-                # if len(tasks) > 0 and task_flag == False:
-                #     logger.info("No")
-                # else:
-
             time.sleep(2)
 
-    def submit(self, path, command, delay, *args, **kwargs):
+    def submit(self, path, command, delay, min_gpu_memory, *args, **kwargs):
         self._job_count += 1
-        task = Task(job_id=self._job_count, path=path, command=command, delay=delay, num_gpus=kwargs["num_gpus"])
+        task = Task(
+            job_id=self._job_count,
+            path=path,
+            command=command,
+            delay=delay,
+            num_gpus=kwargs["num_gpus"],
+            min_gpu_memory=min_gpu_memory,
+        )
         self.tasks.append(task)
         return f"Job {self._job_count} is submitted!"
 
@@ -219,30 +222,65 @@ class Scheduler(Thread):
         self.tasks = new_tasks
 
 
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('server_table.html', title='Workload Manager')
+    return render_template("server_table.html", title="Workload Manager")
 
-@app.route('/view_log/<job_id>')
+
+@app.route("/view_log/<job_id>")
 def read_log(job_id):
     with open(os.path.join(os.path.dirname(__file__), f"outputs/{job_id}.log")) as f:
         data = f.read()
-    return render_template('log.html', title='Workload Manager', content=data)
+    return render_template("log.html", title="Workload Manager", content=data)
 
 
-@app.route('/cleanup')
+@app.route("/settings")
+def settings():
+    return render_template("settings.html", title="Workload Manager")
+
+
+@app.route("/update_enabled_gpus", methods=["GET", "POST"])
+def update_enabled_gpus():
+    if request.method == "POST":
+        gpu_id = int(request.form["gpu_id"])
+        enabled = request.form["enabled"] == "false"
+        scheduler.enabled_gpus[gpu_id] = not enabled
+        return render_template("settings.html", title="Workload Manager")
+    else:
+        return render_template("settings.html", title="Workload Manager")
+
+
+@app.route("/cleanup", methods=["GET", "POST"])
 def cleanup():
     scheduler.cleanup()
-    return "Done"
+    flash("Successfully cleaned up!", "success")
+    return redirect(url_for("index"))
 
 
-@app.route('/api/update_table')
-def update_table():
+@app.route("/api/update_gpus_table")
+def update_gpus_table():
+    data = {"results": []}
+    GPUs = GPUtil.getGPUs()
+
+    for gpu_id, gpu in enumerate(GPUs):
+        item = {
+            "gpu_id": gpu.id,
+            "memory": f"{str(int(gpu.memoryUsed))+'MB'}/" + str(int(gpu.memoryTotal)) + "MB",
+            "utilize": f"{int(gpu.load*100)}%",
+            "enabled": scheduler.enabled_gpus[int(gpu.id)],
+        }
+        data["results"].append(item)
+
+    return data
+
+
+@app.route("/api/update_processes_table")
+def update_processes_table():
     processes = scheduler.get_tasks_stats()
     total_num_processes = len(processes)
 
     # search filter
-    search = request.args.get('search[value]')
+    search = request.args.get("search[value]")
     filtered_processes = []
     if len(search) > 0:
         for p in processes:
@@ -252,44 +290,46 @@ def update_table():
     total_filtered = len(processes)
 
     # sorting
-    col_index = request.args.get(f'order[0][column]')
+    col_index = request.args.get(f"order[0][column]")
     if col_index is not None:
-        col_name = request.args.get(f'columns[{col_index}][data]')
+        col_name = request.args.get(f"columns[{col_index}][data]")
 
-        if col_name not in ['ID', 'command', 'status', "path"]:
-            col_name = 'ID'
+        if col_name not in ["ID", "command", "status", "path"]:
+            col_name = "ID"
 
-        descending = request.args.get(f'order[0][dir]') == 'desc'
+        descending = request.args.get(f"order[0][dir]") == "desc"
 
         processes = sorted(processes, key=lambda x: x[col_name], reverse=descending)
 
     # pagination
-    start = request.args.get('start', type=int)
-    length = request.args.get('length', type=int)
-    processes = processes[start:start + length]
+    start = request.args.get("start", type=int)
+    length = request.args.get("length", type=int)
+    processes = processes[start : start + length]
 
     # response
     return {
-        'data': [p for p in processes],
-        'recordsFiltered': total_filtered,
-        'recordsTotal': total_num_processes,
-        'draw': request.args.get('draw', type=int),
+        "data": [p for p in processes],
+        "recordsFiltered": total_filtered,
+        "recordsTotal": total_num_processes,
+        "draw": request.args.get("draw", type=int),
     }
 
 
-@app.route('/update_process', methods=['GET', 'POST'])
+@app.route("/update_process", methods=["GET", "POST"])
 def update_process():
-    path = request.form['path']
-    command = request.form['command']
-    num_gpus = int(request.form['gpus'])
-    delay = float(request.form['delay'])
-    message = scheduler.submit(path=path, command=command, delay=delay, num_gpus=num_gpus)
+    path = request.form["path"]
+    command = request.form["command"]
+    num_gpus = int(request.form["gpus"])
+    delay = float(request.form["delay"])
+    min_gpu_memory = int(request.form["min_gpu_memory"])
+    message = scheduler.submit(path=path, command=command, delay=delay, num_gpus=num_gpus, min_gpu_memory=min_gpu_memory)
     return message
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     scheduler = Scheduler()
     scheduler.daemon = True
     scheduler.start()
     time.sleep(0.5)
-    app.run(host="0.0.0.0", port=18812)
+
+    app.run(host="0.0.0.0", port=18812, debug=True)

@@ -1,64 +1,64 @@
 {% extends "base.html" %}
 
 {% block content %}
-<table id="data" class="hover order-column row-border">
-  <thead>
-    <tr>
-      <th>ID</th>
-      <th>Uptime</th>
-      <th>GPUs</th>
-      <th>Path</th>
-      <th>Command</th>
-      <th>Status</th>
-      <th>Outputs</th>
-    </tr>
-  </thead>
-  <tbody>
-  </tbody>
+<table id="processes_table" class="hover order-column row-border">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Uptime</th>
+            <th>GPUs</th>
+            <th>Path</th>
+            <th>Command</th>
+            <th>Status</th>
+            <th>Outputs</th>
+        </tr>
+    </thead>
+    <tbody>
+    </tbody>
 </table>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  $(document).ready(function () {
-    var table = $('#data').DataTable({
-      ajax: '/api/update_table',
-      serverSide: true,
-      processing: false,
-      columns: [
-        { data: 'ID' },
-        { data: 'uptime' },
-        { data: 'gpus' },
-        { data: 'path' },
-        { data: 'command' },
-        { data: 'status' },
-        { data: null }
-      ],
-      columnDefs: [
-        {},
-        {},
-        {},
-        {},
-        {},
-        {},
+    $(document).ready(function () {
+        var table = $('#processes_table').DataTable({
+            ajax: '/api/update_processes_table',
+            serverSide: true,
+            processing: false,
+            columns: [
+                { data: 'ID' },
+                { data: 'uptime' },
+                { data: 'gpus' },
+                { data: 'path' },
+                { data: 'command' },
+                { data: 'status' },
+                { data: null }
+            ],
+            columnDefs: [
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
                 // button column
-        { 
-          "targets": -1,
-          "data": null,
-          "defaultContent": "<button>view</button>"
-        }
-      ]
+                {
+                    "targets": -1,
+                    "data": null,
+                    "defaultContent": "<button>view</button>"
+                }
+            ]
+        });
+
+        $('#processes_table tbody').on('click', 'button', function () {
+            var data = table.row($(this).parents('tr')).data();
+            // alert( data["ID"] +"'s salary is: " );
+            window.location.replace("/view_log/" + data["ID"])
+        });
     });
 
-    $('#data tbody').on('click', 'button', function () {
-        var data = table.row( $(this).parents('tr') ).data();
-        // alert( data["ID"] +"'s salary is: " );
-        window.location.replace( "/view_log/" + data["ID"])
-    } );
-  });
-
-  setInterval(function () {
-    $('#data').DataTable().ajax.reload(null,false);
-  }, 1000);
+    setInterval(function () {
+        $('#processes_table').DataTable().ajax.reload(null, false);
+    }, 1000);
 </script>
 {% endblock %}

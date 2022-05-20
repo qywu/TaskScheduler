@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div id="gpus_table"></div>
+
+<!-- <table class="table" id="gpus_table">
+    <thead>
+        <tr>
+            <th scope="col">GPUs</th>
+            <th scope="col">Memory</th>
+            <th scope="col">Utilization</th>
+            <th scope="col">Enabled</th>
+        </tr>
+    </thead>
+    <tbody>
+    </tbody>
+</table> -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function update_gpus_table() {
+        $.ajax({
+            url: "/api/update_gpus_table",
+            dataType: 'json',
+            type: 'get',
+            cache: false,
+            success: function (data) {
+                console.log(data);
+                var event_data = `
+                <div class="justify-content-center">
+                <div class="col-auto">
+                <table class="table center"> 
+                <thead>
+                    <tr>
+                        <th scope="col" class="text-center">GPU ID</th>
+                        <th scope="col" class="text-center">Memory</th>
+                        <th scope="col"class="text-center">Utilization</th>
+                        <th scope="col" class="text-center">Enabled</th>
+                    </tr>
+                </thead>
+                <tbody>
+                </tbody>
+                `;
+                $.each(data.results, function (index, value) {
+                    event_data += '<tr>';
+                    event_data += '<td class="text-center">' + value.gpu_id + '</td>';
+                    event_data += '<td class="text-center">' + value.memory + '</td>';
+                    event_data += '<td class="text-center">' + value.utilize + '</td>';
+                    event_data += `<td class="text-center">
+                                        <div class="checkbox">
+                                            <label class="switch">`;
+
+                    if (value.enabled) {
+                        event_data += '<input id=' + value.gpu_id + ' type="checkbox" checked onClick="reply_click(this.id)">'
+                    } else {
+                        event_data += '<input id=' + value.gpu_id + ' type="checkbox" onClick="reply_click(this.id)">'
+                    }
+
+                    event_data += `         <span class="slider round">
+                                            </span>
+                                            </label>
+                                        </div>
+                                    </td>
+                                    </tr>`;
+
+                });
+                event_data += `</table>     
+                               </div>
+                              </div>`;
+                // });
+                $("#gpus_table").html(event_data)
+            },
+        });
+    }
+
+    $(document).ready(update_gpus_table());
+    setInterval(function () { update_gpus_table(); }, 1000);
+
+    function reply_click(gpu_id) {
+        $.post("/update_enabled_gpus", { "gpu_id": gpu_id, "enabled": document.getElementById(gpu_id).checked });
+    }
+
+</script>
+
+{% endblock %}
