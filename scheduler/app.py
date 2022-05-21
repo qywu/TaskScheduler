@@ -8,6 +8,8 @@ import psutil
 import subprocess
 import random
 from threading import Thread
+from queue import Queue
+from multiprocessing import current_process
 import logging
 
 import GPUtil
@@ -106,6 +108,7 @@ class Scheduler(Thread):
         self.used_gpus = set()
         self.tasks = []
 
+
         # Update GPU information
         gpus = GPUtil.getGPUs()
         self.enabled_gpus = {}
@@ -114,12 +117,9 @@ class Scheduler(Thread):
 
     def run(self):
         while True:
-            if len(self.tasks) < 1:
-                logger.info("No task is in the pool!")
-
             for task in self.tasks:
                 if task.status == STATUS.WAITING:
-                    logger.info("Waiting to allocate resource for task!")
+                    logger.info(f"Task {task.job_id} is waiting for resource allocatation!")
                     break
 
             all_tasks_completed_flag = True
@@ -137,7 +137,8 @@ class Scheduler(Thread):
                 avail_gpus = []
                 for gpu in gpus:
                     if gpu.memoryFree > task.min_gpu_memory:
-                        avail_gpus.append(gpu)
+                        if self.enabled_gpus[gpu.id]:
+                            avail_gpus.append(gpu)
 
                 if task.status == STATUS.WAITING and task.num_gpus <= len(avail_gpus):
                     # execute the task if can be run
@@ -163,7 +164,12 @@ class Scheduler(Thread):
                         self.used_gpus -= task.used_gpus
                         task.close()
 
+            if len(self.tasks) < 1:
+                logger.info("No task is in the pool!")
+
             time.sleep(2)
+
+
 
     def submit(self, path, command, delay, min_gpu_memory, *args, **kwargs):
         self._job_count += 1
@@ -241,13 +247,16 @@ def settings():
 
 @app.route("/update_enabled_gpus", methods=["GET", "POST"])
 def update_enabled_gpus():
+    
     if request.method == "POST":
         gpu_id = int(request.form["gpu_id"])
         enabled = request.form["enabled"] == "false"
         scheduler.enabled_gpus[gpu_id] = not enabled
-        return render_template("settings.html", title="Workload Manager")
+        flash(f"Changed GPU {gpu_id} status to {scheduler.enabled_gpus[gpu_id]}!", "warning")
+        logger.info(f"Changed GPU {gpu_id} status to {scheduler.enabled_gpus[gpu_id]}!")
+        return redirect("/settings")
     else:
-        return render_template("settings.html", title="Workload Manager")
+        return redirect("/settings")
 
 
 @app.route("/cleanup", methods=["GET", "POST"])
@@ -326,10 +335,12 @@ def update_process():
     return message
 
 
+
 if __name__ == "__main__":
     scheduler = Scheduler()
-    scheduler.daemon = True
     scheduler.start()
     time.sleep(0.5)
 
-    app.run(host="0.0.0.0", port=18812, debug=True)
+    app.run(host="0.0.0.0", port=18812, debug=False)
+
+
