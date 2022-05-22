@@ -32,6 +32,7 @@ class STATUS:
     DONE = 2
     ERROR = 3
     CLOSED = 4
+    KILLED = 5  # TODO
 
 
 class Task:
@@ -108,7 +109,6 @@ class Scheduler(Thread):
         self.used_gpus = set()
         self.tasks = []
 
-
         # Update GPU information
         gpus = GPUtil.getGPUs()
         self.enabled_gpus = {}
@@ -138,7 +138,11 @@ class Scheduler(Thread):
                 for gpu in gpus:
                     if gpu.memoryFree > task.min_gpu_memory:
                         if self.enabled_gpus[gpu.id]:
-                            avail_gpus.append(gpu)
+                            avail_gpus.append((gpu, gpu.memoryFree))
+                
+                # rank by free memory
+                avail_gpus = sorted(avail_gpus, key=lambda x: x[1], reverse=True)
+                avail_gpus = [item[0] for item in avail_gpus]
 
                 if task.status == STATUS.WAITING and task.num_gpus <= len(avail_gpus):
                     # execute the task if can be run
@@ -168,8 +172,6 @@ class Scheduler(Thread):
                 logger.info("No task is in the pool!")
 
             time.sleep(2)
-
-
 
     def submit(self, path, command, delay, min_gpu_memory, *args, **kwargs):
         self._job_count += 1
@@ -247,7 +249,7 @@ def settings():
 
 @app.route("/update_enabled_gpus", methods=["GET", "POST"])
 def update_enabled_gpus():
-    
+
     if request.method == "POST":
         gpu_id = int(request.form["gpu_id"])
         enabled = request.form["enabled"] == "false"
@@ -331,9 +333,10 @@ def update_process():
     num_gpus = int(request.form["gpus"])
     delay = float(request.form["delay"])
     min_gpu_memory = int(request.form["min_gpu_memory"])
-    message = scheduler.submit(path=path, command=command, delay=delay, num_gpus=num_gpus, min_gpu_memory=min_gpu_memory)
+    message = scheduler.submit(
+        path=path, command=command, delay=delay, num_gpus=num_gpus, min_gpu_memory=min_gpu_memory
+    )
     return message
-
 
 
 if __name__ == "__main__":
@@ -342,5 +345,4 @@ if __name__ == "__main__":
     time.sleep(0.5)
 
     app.run(host="0.0.0.0", port=18812, debug=False)
-
 
