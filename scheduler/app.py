@@ -1,4 +1,5 @@
 import os
+import signal
 import glob
 import time
 import datetime
@@ -139,7 +140,7 @@ class Scheduler(Thread):
                     if gpu.memoryFree > task.min_gpu_memory:
                         if self.enabled_gpus[gpu.id]:
                             avail_gpus.append((gpu, gpu.memoryFree))
-                
+
                 # rank by free memory
                 avail_gpus = sorted(avail_gpus, key=lambda x: x[1], reverse=True)
                 avail_gpus = [item[0] for item in avail_gpus]
@@ -150,8 +151,8 @@ class Scheduler(Thread):
                         gpu_ids = [gpu.id for gpu in avail_gpus]
                         logger.info(f"GPU {gpu_ids} are available! Selecting the first one.")
                         os.environ["CUDA_VISIBLE_DEVICES"] = str(avail_gpus[0].id)
-                        self.used_gpus.add(avail_gpus[0])
-                        task.used_gpus.add(avail_gpus[0])
+                        self.used_gpus.add(avail_gpus[0].id)
+                        task.used_gpus.add(avail_gpus[0].id)
 
                     logger.info("Running task!")
 
@@ -242,6 +243,27 @@ def read_log(job_id):
     return render_template("log.html", title="Workload Manager", content=data)
 
 
+@app.route("/kill_job/<job_id>")
+def kill_job(job_id):
+    flag = False
+    job_id = int(job_id)
+    for task_idx, task in enumerate(scheduler.tasks):
+        if task.job_id == job_id:
+            flag = True
+            break
+
+    if flag:
+        if task.status == STATUS.RUNNING:
+            if task.proc is not None:
+                os.kill(task.proc.pid, signal.SIGINT)
+
+        logger.info(f"Killed {job_id}")
+        scheduler.tasks.remove(task)
+
+    flash(f"Killed job {job_id}!", "danger")
+    return redirect("/")
+
+
 @app.route("/settings")
 def settings():
     return render_template("settings.html", title="Workload Manager")
@@ -249,7 +271,6 @@ def settings():
 
 @app.route("/update_enabled_gpus", methods=["GET", "POST"])
 def update_enabled_gpus():
-
     if request.method == "POST":
         gpu_id = int(request.form["gpu_id"])
         enabled = request.form["enabled"] == "false"

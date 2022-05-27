@@ -11,6 +11,7 @@
             <th>Command</th>
             <th>Status</th>
             <th>Outputs</th>
+            <th>Kill</th>
         </tr>
     </thead>
     <tbody>
@@ -32,6 +33,7 @@
                 { data: 'path' },
                 { data: 'command' },
                 { data: 'status' },
+                { data: null },
                 { data: null }
             ],
             columnDefs: [
@@ -43,17 +45,25 @@
                 {},
                 // button column
                 {
+                    "targets": -2,
+                    "data": null,
+                    "defaultContent": '<button type="button" class="btn btn-outline-primary" id="view">view</button>'
+                },
+                {
                     "targets": -1,
                     "data": null,
-                    "defaultContent": "<button>view</button>"
-                }
+                    "defaultContent": '<button type="button" class="btn btn-outline-danger" id="kill">kill</button>'
+                },
             ]
         });
 
-        $('#processes_table tbody').on('click', 'button', function () {
+        $('#processes_table tbody').on('click', '[id="view"]', function () {
             var data = table.row($(this).parents('tr')).data();
-            // alert( data["ID"] +"'s salary is: " );
             window.location.replace("/view_log/" + data["ID"])
+        });
+        $('#processes_table tbody').on('click', '[id="kill"]', function () {
+            var data = table.row($(this).parents('tr')).data();
+            window.location.replace("/kill_job/" + data["ID"])
         });
     });
 
