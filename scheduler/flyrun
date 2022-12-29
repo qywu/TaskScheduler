@@ -15,13 +15,13 @@ parser.add_argument("-g", "--gpus", type=int, default=0,
                     help="number of gpus")
 
 parser.add_argument("-d", "--delay", type=int, default=0,
-                    help="delay for running next task")
+                    help="delay seconds for running next task")
 
 parser.add_argument("-p", "--port", type=str, default="18812",
                     help="delay for running next task")
 
 parser.add_argument("--min_gpu_memory", type=int, default=-1,
-                    help="required gpu memory")
+                    help="required gpu memory (MB)")
 
 # parser.add_argument("-c", type=tstring, nargs="+",
 #                     help="number of pgus")
