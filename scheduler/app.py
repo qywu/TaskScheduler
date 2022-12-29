@@ -144,6 +144,10 @@ class Scheduler(Thread):
                 # rank by free memory
                 avail_gpus = sorted(avail_gpus, key=lambda x: x[1], reverse=True)
                 avail_gpus = [item[0] for item in avail_gpus]
+                # move used gpus to the end
+                avail_gpus = [gpu for gpu in avail_gpus if gpu.id not in self.used_gpus] + [
+                    gpu for gpu in avail_gpus if gpu.id in self.used_gpus
+                ]
 
                 if task.status == STATUS.WAITING and task.num_gpus <= len(avail_gpus):
                     # execute the task if can be run
