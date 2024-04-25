@@ -21,14 +21,15 @@
   <link rel="stylesheet" href="{{url_for('static', filename='css/styles.css')}}">
 </head>
 
-<!-- BODY -->
+{% block style %}{% endblock %}
 
+<!-- BODY -->
 <body>
   <div class="container">
     <!-- The navigation menu -->
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
       <div class="container-fluid">
-        <a class="navbar-brand" style="font-size:30px;" href="/">Wordload Manager</a>
+        <a class="navbar-brand" style="font-size:30px;" href="/">Task Scheduler</a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavAltMarkup"
           aria-controls="navbarNavAltMarkup" aria-expanded="false" aria-label="Toggle navigation">
           <span class="navbar-toggler-icon"></span>
@@ -36,7 +37,7 @@
         <div class="collapse navbar-collapse justify-content-end" id="navbarNavAltMarkup">
           <div class="navbar-nav">
             <a class="nav-link active" aria-current="page" href="/">Home</a>
-            <a class="nav-link active" href="/settings">Settings</a>
+            <a class="nav-link active" href="/gpus_info">GPUs</a>
             <a class="navbar-nav" style="text-decoration: none" href="/cleanup">
               <button class="btn btn-outline-danger btn-sm" type="button">Cleanup</button>
             </a>

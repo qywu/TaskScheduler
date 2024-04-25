@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 
+{% block style %}
+{% endblock %}
+
+
 {% block content %}
 <table id="processes_table" class="hover order-column row-border">
     <thead>
@@ -26,12 +30,13 @@
             ajax: '/api/update_processes_table',
             serverSide: true,
             processing: false,
+            responsive: true,  // Enable responsive feature
             columns: [
-                { data: 'ID' },
-                { data: 'uptime' },
-                { data: 'gpus' },
+                { data: 'ID'},
+                { data: 'uptime'},
+                { data: 'gpus'},
                 { data: 'path' },
-                { data: 'command' },
+                { data: 'command'},
                 { data: 'status' },
                 { data: null },
                 { data: null }

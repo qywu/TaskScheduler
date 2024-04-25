@@ -1,0 +1,10 @@
+user:
+  admin: # only one admin user
+    password: "123456"
+server:
+  host: "0.0.0.0"
+  port: 55555
+  stream_timeout: 10  # seconds
+scheduler:
+  check_interval: 5  # seconds
+  max_num_retries: 10

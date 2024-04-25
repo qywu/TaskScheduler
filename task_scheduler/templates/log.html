@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block style %}
+<style>
+    #text-viewer {
+        width: 80%;
+        height: 400px;
+        margin: 20px auto;
+        padding: 10px;
+        border: 1px solid #ccc;
+        overflow-y: auto;
+        background-color: #f9f9f9;
+        resize: none; /* Disable resizing */
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        white-space: pre-wrap; /* Preserve white spaces and line breaks, and wrap text */
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h3>Log Viewer for Job: {{ job_id }}</h3>
+    <div id="text-viewer"></div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+    const viewer = document.getElementById('text-viewer');
+
+    const fetchStream = async () => {
+        const jobId = "{{ job_id }}";
+        const url = `/stream_log/${jobId}`;
+        console.log(url);
+        const response = await fetch(url);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const wasScrolledToBottom = viewer.scrollHeight - viewer.clientHeight <= viewer.scrollTop + 1;
+            viewer.textContent += decoder.decode(value);
+            if (wasScrolledToBottom) {
+                viewer.scrollTop = viewer.scrollHeight; // Scroll to bottom only if it was already at the bottom
+            }
+        }
+    }
+    fetchStream();
+</script>
+{% endblock %}

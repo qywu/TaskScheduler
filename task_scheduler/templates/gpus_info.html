@@ -3,6 +3,8 @@
 
 {% block content %}
 
+Toggle the switch to enable or disable the GPU during the task execution.
+
 <div id="gpus_table"></div>
 
 {% endblock %}
@@ -16,11 +18,10 @@
             type: 'get',
             cache: false,
             success: function (data) {
-                console.log(data);
                 var event_data = `
                 <div class="justify-content-center">
                 <div class="col-auto">
-                <table class="table center"> 
+                <table class="table table-bordered table-hover"> 
                 <thead>
                     <tr>
                         <th scope="col" class="text-center">GPU ID</th>
@@ -30,36 +31,25 @@
                     </tr>
                 </thead>
                 <tbody>
-                </tbody>
                 `;
                 $.each(data.results, function (index, value) {
-                    event_data += '<tr>';
+                    var enabledClass = value.enabled ? "enabled-gpu" : "disabled-gpu";
+                    event_data += `<tr class="${enabledClass}">`;
                     event_data += '<td class="text-center">' + value.gpu_id + '</td>';
                     event_data += '<td class="text-center">' + value.memory + '</td>';
                     event_data += '<td class="text-center">' + value.utilize + '</td>';
                     event_data += `<td class="text-center">
-                                        <div class="checkbox">
-                                            <label class="switch">`;
-
-                    if (value.enabled) {
-                        event_data += '<input id=' + value.gpu_id + ' type="checkbox" checked onClick="reply_click(this.id)">'
-                    } else {
-                        event_data += '<input id=' + value.gpu_id + ' type="checkbox" onClick="reply_click(this.id)">'
-                    }
-
-                    event_data += `         <span class="slider round">
-                                            </span>
-                                            </label>
-                                        </div>
-                                    </td>
-                                    </tr>`;
-
+                                    <div class="checkbox">
+                                        <label class="switch">
+                                            <input id="${value.gpu_id}" type="checkbox" ${value.enabled ? 'checked' : ''} onClick="reply_click(this.id)">
+                                            <span class="slider round"></span>
+                                        </label>
+                                    </div>
+                                </td>
+                                </tr>`;
                 });
-                event_data += `</table>     
-                               </div>
-                              </div>`;
-                // });
-                $("#gpus_table").html(event_data)
+                event_data += `</tbody></table></div></div>`;
+                $("#gpus_table").html(event_data);
             },
         });
     }
@@ -68,10 +58,8 @@
     setInterval(function () { update_gpus_table(); }, 1000);
 
     function reply_click(gpu_id) {
-        $.post("/update_enabled_gpus", { "gpu_id": gpu_id, "enabled": document.getElementById(gpu_id).checked });
-        $(location).prop('href', '/update_enabled_gpus')
+        var isChecked = document.getElementById(gpu_id).checked;
+        $.post("/update_enabled_gpus", { "gpu_id": gpu_id, "enabled": isChecked });
     }
-
 </script>
-
 {% endblock %}
