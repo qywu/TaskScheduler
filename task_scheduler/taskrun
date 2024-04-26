@@ -1,64 +1,122 @@
 #!/usr/bin/env python3
 import os
 import requests
-import torch
+import subprocess
 import argparse
+import logging
 from omegaconf import OmegaConf
 
 
-def tstring(astring):
-    return astring
+def load_config():
+    dirpath = os.path.dirname(os.path.realpath(__file__))
+    config_path = os.path.join(dirpath, "config.yaml")
+    if not os.path.exists(config_path):
+        logging.error("Config file not found.")
+        exit(1)
+    return OmegaConf.load(config_path)
 
 
-dirpath = os.path.dirname(os.path.realpath(__file__))
-config = OmegaConf.load(os.path.join(dirpath, "config.yaml"))
+def parse_arguments(config):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-n", "--num_gpus", type=int, default=0, help="number of gpus")
+    parser.add_argument(
+        "-g",
+        "--gpus",
+        type=str,
+        default="",
+        help="Specify the gpu index to use, e.g. 0,1,2,3",
+    )
+    parser.add_argument(
+        "-t",
+        "--time_interval",
+        type=int,
+        default=0,
+        help="the time interval (s) to start running the next task",
+    )
+    parser.add_argument(
+        "-m", "--min_gpu_memory", type=int, default=-1, help="required gpu memory (MB)"
+    )
+    parser.add_argument(
+        "--max_num_retries",
+        type=int,
+        default=config.scheduler.max_num_retries,
+        help="maximum number of retries",
+    )
 
-parser = argparse.ArgumentParser()
-# subparsers = parser.add_subparsers(help='for dealing with the command')
+    # Parse the arguments
+    args, rest = parser.parse_known_args()
+    command = " ".join(rest)
 
-parser.add_argument("-g", "--gpus", type=int, default=0, help="number of gpus")
-
-parser.add_argument(
-    "-t",
-    "--time_interval",
-    type=int,
-    default=0,
-    help="the time interval (s) to start running the next task",
-)
-
-parser.add_argument(
-    "-m", "--min_gpu_memory", type=int, default=-1, help="required gpu memory (MB)"
-)
-
-parser.add_argument(
-    "--max_num_retries", type=int, default=-1, help="maximum number of retries"
-)
+    return args, command
 
 
-args, rest = parser.parse_known_args()
-command = " ".join(rest)
+def init_server(args):
+    print("Initializing the web server")
+    os.chdir(os.path.dirname(os.path.realpath(__file__)))
+    app_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "app.py")
+    subprocess.run(["python3", app_path])
 
-if args.gpus > 0:
-    if not torch.cuda.is_available():
-        print("CUDA is not available")
+
+def setup_gpu(args, config):
+    try:
+        smi_output = subprocess.check_output(
+            ["nvidia-smi", "-q", "-d", "MEMORY"]
+        ).decode("utf-8")
+        if "CUDA Version" not in smi_output:
+            logging.error("CUDA is not available")
+            exit(1)
+
+        if args.min_gpu_memory == -1:
+            # Extract total GPU memory and parse it
+            total_memory_line = [
+                line for line in smi_output.split("\n") if "Total" in line
+            ][0]
+            total_memory = int(total_memory_line.split(":")[1].strip().split(" ")[0])
+            args.min_gpu_memory = (
+                total_memory - config.scheduler.reserved_gpu_memory
+            )  # Assuming memory is in MB
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to run nvidia-smi: {e}")
         exit(1)
 
-    if args.min_gpu_memory == -1:
-        # set the minimum gpu memory to the GPU memory, assume that the user wants to use the whole GPU - 5GB
-        args.min_gpu_memory = (
-            torch.cuda.get_device_properties(0).total_memory // 1024 // 1024 - 5000
-        )
 
-url = f"http://127.0.0.1:{config.server.port}/update_process"
-myobj = {
-    "path": os.getcwd(),
-    "command": command,
-    "gpus": args.gpus,
-    "time_interval": args.time_interval,
-    "min_gpu_memory": args.min_gpu_memory,
-    "max_num_retries": args.max_num_retries,
-    "password": config.user.admin.password,
-}
-x = requests.post(url, data=myobj)
+def extract_gpus_list(gpus):
+    return [gpu_id for gpu_id in gpus.split(",") if gpu_id != ""]
 
-print(x.text)
+
+def post_status_update(config, args, command):
+    url = f"http://127.0.0.1:{config.server.port}/update_process"
+    myobj = {
+        "path": os.getcwd(),
+        "command": command,
+        "num_gpus": args.num_gpus,
+        "gpus": args.gpus,
+        "time_interval": args.time_interval,
+        "min_gpu_memory": args.min_gpu_memory,
+        "max_num_retries": args.max_num_retries,
+        "password": config.user.admin.password,
+    }
+    try:
+        response = requests.post(url, data=myobj)
+        logging.info(response.text)
+    except requests.RequestException as e:
+        logging.error(f"Failed to send data to server: {e}")
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    config = load_config()
+    args, command = parse_arguments(config)
+
+    if command.strip() == "init":
+        init_server(args)
+        return
+
+    setup_gpu(args, config)
+    gpus_list = extract_gpus_list(args.gpus)
+    args.num_gpus = len(gpus_list) if args.gpus else args.num_gpus
+    post_status_update(config, args, command)
+
+
+if __name__ == "__main__":
+    main()

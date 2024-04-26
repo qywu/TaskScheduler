@@ -8,3 +8,4 @@ server:
 scheduler:
   check_interval: 5  # seconds
   max_num_retries: 10
+  reserved_gpu_memory: 5000 # Used if min_gpu_memory is not specified, in MB

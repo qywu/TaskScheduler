@@ -5,7 +5,6 @@ import signal
 import glob
 import time
 import datetime
-from matplotlib.style import available
 from omegaconf import OmegaConf
 import psutil
 import subprocess
@@ -13,8 +12,6 @@ import random
 import threading
 from threading import Thread, Lock
 import queue
-from queue import Queue
-import yaml
 import logging
 
 import GPUtil
@@ -22,7 +19,16 @@ import GPUtil
 import asyncio
 import aiofiles
 
-from flask import Flask, render_template, request, flash, redirect, url_for, Response, stream_with_context
+from flask import (
+    Flask,
+    render_template,
+    request,
+    flash,
+    redirect,
+    url_for,
+    Response,
+    stream_with_context,
+)
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
 
 
@@ -51,7 +57,11 @@ def load_user(user_id):
     return None
 
 
-logging.basicConfig(format="%(asctime)s-%(levelname)s-%(message)s", level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(
+    format="%(asctime)s-%(levelname)s-%(message)s",
+    level=logging.INFO,
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
@@ -84,6 +94,7 @@ class Task:
         path,
         command,
         num_gpus=0,
+        gpus=None,
         time_interval=0,
         min_gpu_memory=None,
         max_num_retries=0,
@@ -93,6 +104,7 @@ class Task:
         self.path = path
         self.command = command
         self.num_gpus = num_gpus
+        self.gpus = gpus
         self.min_gpu_memory = min_gpu_memory
         self.time_interval = time_interval
         self.pid = None
@@ -116,12 +128,12 @@ class Task:
             self.file_stream = open(self.log_path, "a")
             self.status = TASK_STATUS.RUNNING
             self.proc = subprocess.Popen(
-                    self.command,
-                    stdout=self.file_stream,
-                    stderr=self.file_stream,
-                    shell=True,
-                    cwd=self.path,
-                    bufsize=1
+                self.command,
+                stdout=self.file_stream,
+                stderr=self.file_stream,
+                shell=True,
+                cwd=self.path,
+                bufsize=1,
             )
             self.pid = self.proc.pid
             self.start_time = psutil.Process(self.pid).create_time()
@@ -145,7 +157,7 @@ class Task:
                 pass
         self.pid = None
         self.used_gpus.clear()
-        if hasattr(self, 'file_stream'):
+        if hasattr(self, "file_stream"):
             self.file_stream.close()
 
     def check_and_update_status(self):
@@ -171,6 +183,7 @@ class Task:
         self.used_gpus = set()
         self.start_time = None
         self.position_in_queue = -1
+
 
 class Scheduler(Thread):
     def __init__(self) -> None:
@@ -214,10 +227,13 @@ class Scheduler(Thread):
         for task in self.tasks:
             if task.status == TASK_STATUS.WAITING:
                 logger.info(f"Task {task.job_id} is waiting for resource allocation!")
+                # Filter GPUs based on task-specific GPU ids and sufficient memory
                 suitable_gpus = [
                     gpu
                     for gpu, mem in avail_gpus
-                    if mem >= task.min_gpu_memory and int(gpu.id) not in self.used_gpus
+                    if int(gpu.id) in task.gpus  # Ensure GPU is in task's allowed list
+                    and mem >= task.min_gpu_memory
+                    and int(gpu.id) not in self.used_gpus
                 ]
 
                 if len(suitable_gpus) >= task.num_gpus:
@@ -230,9 +246,9 @@ class Scheduler(Thread):
         gpu_ids = [int(gpu.id) for gpu in suitable_gpus[: task.num_gpus]]
         logger.info(f"Allocating GPUs {gpu_ids} to task {task.job_id}.")
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
-        for gpu_id in gpu_ids:
-            self.used_gpus.add(gpu_id)
-            task.used_gpus.add(gpu_id)
+
+        self.used_gpus.update(gpu_id for gpu_id in gpu_ids)
+        task.used_gpus.update(gpu_id for gpu_id in gpu_ids)
 
         task.run()
         # Give the command to run time_interval before running the next task
@@ -282,6 +298,10 @@ class Scheduler(Thread):
     def submit(self, path, command, time_interval, min_gpu_memory, *args, **kwargs):
         timestamp = datetime.datetime.now().isoformat()
         job_id = f"{HOSTNAME}_{timestamp}"
+        gpus = kwargs["gpus"]
+        if not gpus or len(gpus) == 0:
+            gpus = list(range(self.max_num_gpus))
+
         task = Task(
             job_id=job_id,
             path=path,
@@ -289,6 +309,7 @@ class Scheduler(Thread):
             time_interval=time_interval,
             num_gpus=kwargs["num_gpus"],
             min_gpu_memory=min_gpu_memory,
+            gpus=gpus,
         )
         self.tasks.append(task)
         return f"Job {task.job_id} is submitted!"
@@ -371,15 +392,19 @@ def index():
 
 
 async def stream_text_file(filename, max_empty_lines=100):
-    async with aiofiles.open(filename, mode='r') as file:
+    async with aiofiles.open(filename, mode="r") as file:
         await file.seek(0)  # Move to the beginning of the file
         empty_line_count = 0  # Counter for consecutive empty lines
         while True:
             try:
                 # Wait for readline with a timeout
-                line = await asyncio.wait_for(file.readline(), config.server.stream_timeout)
+                line = await asyncio.wait_for(
+                    file.readline(), config.server.stream_timeout
+                )
                 if not line:
-                    empty_line_count += 1  # Increment counter when an empty line is found
+                    empty_line_count += (
+                        1  # Increment counter when an empty line is found
+                    )
                     if empty_line_count >= max_empty_lines:
                         logger.info(f"Reached max empty lines in {filename}")
                         break  # Break if the max count of empty lines is reached
@@ -387,11 +412,12 @@ async def stream_text_file(filename, max_empty_lines=100):
                     continue
                 # Reset empty line counter on reading data
                 empty_line_count = 0
-                yield line.encode('utf-8')  # Encode line for streaming
+                yield line.encode("utf-8")  # Encode line for streaming
             except asyncio.TimeoutError:
                 # Break the loop if readline times out
                 logger.info(f"Timeout reading {filename}")
                 break
+
 
 def stream_file(filename, stop_event):
     q = queue.Queue()
@@ -422,13 +448,20 @@ def stream_file(filename, stop_event):
     thread.join()
     logger.info(f"Stopped streaming {filename}")
 
-@app.route('/stream_log/<job_id>')
+
+@app.route("/stream_log/<job_id>")
 def stream(job_id):
     stop_event = threading.Event()
     filename = os.path.join(os.path.dirname(__file__), f"outputs/{job_id}.log")
-    response = Response(stream_with_context(stream_file(filename, stop_event)), mimetype="text/event-stream")
-    response.call_on_close(lambda: stop_event.set())  # Set stop event when client disconnects
+    response = Response(
+        stream_with_context(stream_file(filename, stop_event)),
+        mimetype="text/event-stream",
+    )
+    response.call_on_close(
+        lambda: stop_event.set()
+    )  # Set stop event when client disconnects
     return response
+
 
 @app.route("/view_log/<job_id>")
 def read_log(job_id):
@@ -555,7 +588,10 @@ def update_processes_table():
 def update_process():
     path = request.form["path"]
     command = request.form["command"]
-    num_gpus = int(request.form["gpus"])
+    num_gpus = int(request.form["num_gpus"])
+    gpus = [
+        int(gpu_id) for gpu_id in request.form["gpus"].split(",") if gpu_id.isdigit()
+    ]
     time_interval = float(request.form["time_interval"])
     min_gpu_memory = int(request.form["min_gpu_memory"])
     max_num_retries = int(request.form["max_num_retries"])
@@ -567,6 +603,7 @@ def update_process():
         command=command,
         time_interval=time_interval,
         num_gpus=num_gpus,
+        gpus=gpus,
         min_gpu_memory=min_gpu_memory,
         max_num_retries=max_num_retries,
     )
@@ -576,5 +613,18 @@ def update_process():
 if __name__ == "__main__":
     scheduler = Scheduler()
     scheduler.start()
+
+    print(f"Starting server at {config.server.host}:{config.server.port}\n"
+           "    please visit http://{config.server.host}:{config.server.port} for logs.")
+
+    import textwrap
+    cmd_example = \
+        """
+        To submit a task, you can use the following command to request 1 gpu with 30GB gpu memory and allow 10 seconds of time interval:
+            taskrun -n 1 -m 30000 -t 10 python test.py
+        """
+    cmd_example = textwrap.dedent(cmd_example)
+    
+    print(cmd_example)
 
     app.run(host=config.server.host, port=config.server.port, debug=False)
