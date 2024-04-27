@@ -83,8 +83,55 @@ class TASK_STATUS:
     RUNNING = 1
     DONE = 2
     ERROR = 3
-    CLOSED = 4
-    KILLED = 5  # TODO
+    KILLED = 4
+
+
+def terminate_process_tree(pid, timeout=5):
+    """
+    Attempts to terminate a process and all its children processes. If they do not exit within
+    the specified timeout, forcefully kills them.
+
+    Args:
+        pid (int): Process ID of the parent process to terminate.
+        timeout (int): Time in seconds to wait for processes to exit gracefully.
+
+    Returns:
+        None
+    """
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)  # Get all child processes
+
+        # Try to terminate all child processes first
+        for child in children:
+            child.terminate()
+
+        # Wait for child processes to terminate
+        gone, still_alive = psutil.wait_procs(children, timeout=timeout)
+        for p in still_alive:
+            logger.warning(f"Child process {p.pid} did not terminate, killing it.")
+            p.kill()
+
+        # After handling children, try to terminate the parent process
+        parent.terminate()
+        parent.wait(timeout=timeout)  # Wait for the parent process to terminate
+
+        # If the parent process hasn't terminated, kill it
+        if parent.is_running():
+            logger.warning(f"Parent process {pid} did not terminate, killing it.")
+            parent.kill()
+            logger.info(f"Parent process {pid} killed.")
+        else:
+            logger.info(f"Parent process {pid} terminated gracefully.")
+
+    except psutil.NoSuchProcess:
+        logger.error(f"Process {pid} not found!")
+    except psutil.AccessDenied:
+        logger.error(f"Access denied when trying to terminate process {pid}.")
+    except Exception as e:
+        logger.error(
+            f"An error occurred while trying to terminate process {pid}: {str(e)}"
+        )
 
 
 class Task:
@@ -148,13 +195,8 @@ class Task:
 
     def close(self):
         if self.pid:
-            try:
-                proc = psutil.Process(self.pid)
-                if proc.is_running():
-                    logger.warning(f"Attempting to close running task {self.job_id}")
-                    proc.terminate()
-            except psutil.NoSuchProcess:
-                pass
+            terminate_process_tree(self.pid)
+
         self.pid = None
         self.used_gpus.clear()
         if hasattr(self, "file_stream"):
@@ -225,6 +267,12 @@ class Scheduler(Thread):
 
         # Loop over all tasks
         for task in self.tasks:
+            # update uptime
+            if task.status == TASK_STATUS.RUNNING:
+                start_time = task.start_time
+                diff_time = time.time() - start_time
+                task.uptime = str(datetime.timedelta(seconds=int(diff_time)))
+            
             if task.status == TASK_STATUS.WAITING:
                 logger.info(f"Task {task.job_id} is waiting for resource allocation!")
                 # Filter GPUs based on task-specific GPU ids and sufficient memory
@@ -233,7 +281,7 @@ class Scheduler(Thread):
                     for gpu, mem in avail_gpus
                     if int(gpu.id) in task.gpus  # Ensure GPU is in task's allowed list
                     and mem >= task.min_gpu_memory
-                    and int(gpu.id) not in self.used_gpus
+                    # and int(gpu.id) not in self.used_gpus
                 ]
 
                 if len(suitable_gpus) >= task.num_gpus:
@@ -257,16 +305,21 @@ class Scheduler(Thread):
 
     def check_task_statuses(self):
         all_tasks_completed = all(
-            task.status in {TASK_STATUS.DONE, TASK_STATUS.ERROR} for task in self.tasks
+            task.status in {TASK_STATUS.DONE, TASK_STATUS.ERROR, TASK_STATUS.KILLED}
+            for task in self.tasks
         )
 
         if all_tasks_completed and self.tasks:
             logger.info("All tasks completed! Please check the logs for results.")
 
         for task in self.tasks:
-            if task.status not in {TASK_STATUS.DONE, TASK_STATUS.ERROR}:
+            if task.status not in {
+                TASK_STATUS.DONE,
+                TASK_STATUS.ERROR,
+                TASK_STATUS.KILLED,
+            }:
                 status = task.check_and_update_status()
-                if status in {TASK_STATUS.DONE, TASK_STATUS.ERROR}:
+                if status in {TASK_STATUS.DONE, TASK_STATUS.ERROR, TASK_STATUS.KILLED}:
                     self.release_resources(task)
 
                 if status == TASK_STATUS.ERROR:
@@ -282,6 +335,19 @@ class Scheduler(Thread):
                         logger.error(
                             f"Task {task.job_id} failed! No more retries left."
                         )
+
+    def sort_tasks_by_status(self):
+        # Define a dictionary to map statuses to sorting priorities
+        priority = {
+            TASK_STATUS.DONE: 1,
+            TASK_STATUS.ERROR: 2,
+            TASK_STATUS.RUNNING: 3,
+            TASK_STATUS.WAITING: 3,
+            TASK_STATUS.KILLED: 5,
+        }
+
+        # Sort the tasks list using the priority of their statuses
+        self.tasks.sort(key=lambda task: priority[task.status])
 
     def release_resources(self, task):
         self.used_gpus.difference_update(task.used_gpus)
@@ -327,12 +393,10 @@ class Scheduler(Thread):
                 status = "Done"
             elif task.status == TASK_STATUS.ERROR:
                 status = "Error"
-
-            # get uptime
-            if task.status == TASK_STATUS.RUNNING:
-                start_time = task.start_time
-                diff_time = time.time() - start_time
-                task.uptime = str(datetime.timedelta(seconds=int(diff_time)))
+            elif task.status == TASK_STATUS.KILLED:
+                status = "Killed"
+            else:
+                status = "Unknown"
 
             used_gpus = str(list(task.used_gpus))[1:-1]
 
@@ -351,7 +415,11 @@ class Scheduler(Thread):
         "Remove finished tasks"
         new_tasks = []
         for task in self.tasks:
-            if task.status != TASK_STATUS.DONE and task.status != TASK_STATUS.ERROR:
+            if task.status not in {
+                TASK_STATUS.DONE,
+                TASK_STATUS.ERROR,
+                TASK_STATUS.KILLED,
+            }:
                 new_tasks.append(task)
         self.tasks = new_tasks
 
@@ -395,23 +463,27 @@ async def stream_text_file(filename, idle_timeout=30):
     async with aiofiles.open(filename, mode="r") as file:
         await file.seek(0)  # Move to the beginning of the file
         start_idle_time = None  # Track start of idle time due to empty lines
-        
+
         while True:
             try:
                 # Wait for readline with a timeout
                 line = await asyncio.wait_for(
                     file.readline(), config.server.stream_timeout
                 )
-                
+
                 if not line:
                     if start_idle_time is None:
-                        start_idle_time = asyncio.get_running_loop().time()  # Mark start of idle time
-                    elif (asyncio.get_running_loop().time() - start_idle_time) > idle_timeout:
+                        start_idle_time = (
+                            asyncio.get_running_loop().time()
+                        )  # Mark start of idle time
+                    elif (
+                        asyncio.get_running_loop().time() - start_idle_time
+                    ) > idle_timeout:
                         logger.info(f"Idle timeout reached while reading {filename}")
                         break  # Break if the idle timeout is exceeded
                     await asyncio.sleep(0.1)  # Sleep briefly if line is empty
                     continue
-                
+
                 # Reset idle timer on reading data
                 start_idle_time = None
                 yield line.encode("utf-8")  # Encode line for streaming
@@ -419,6 +491,7 @@ async def stream_text_file(filename, idle_timeout=30):
                 # Break the loop if readline times out
                 logger.info(f"Timeout reading {filename}")
                 break
+
 
 def stream_file(filename, stop_event):
     q = queue.Queue()
@@ -473,6 +546,35 @@ def read_log(job_id):
     return render_template("log.html", title="Task Scheduler", job_id=job_id)
 
 
+# def try_terminate_then_kill(pid, timeout=10):
+#     """
+#     Tries to terminate the process with the given PID and kills it if it doesn't exit within the timeout period.
+
+#     Args:
+#         pid (int): Process ID of the task to terminate.
+#         timeout (int): Time in seconds to wait for the process to exit gracefully before killing it.
+
+#     Returns:
+#         None
+#     """
+#     try:
+#         proc = psutil.Process(pid)
+#         # Try to terminate the process
+#         proc.terminate()
+#         # Wait for the process to terminate
+#         try:
+#             proc.wait(timeout=timeout)
+#             logger.info(f"Process {pid} terminated gracefully.")
+#         except psutil.TimeoutExpired:
+#             # If the process is still alive after the timeout, kill it
+#             proc.kill()
+#             logger.warning(f"Process {pid} was killed after timeout.")
+#     except psutil.NoSuchProcess:
+#         logger.error(f"Process {pid} not found!")
+#     except Exception as e:
+#         logger.error(f"An error occurred while trying to terminate process {pid}: {str(e)}")
+
+
 @app.route("/kill_job/<job_id>")
 def kill_job(job_id):
     flag = False
@@ -484,16 +586,16 @@ def kill_job(job_id):
     if flag:
         if task.status == TASK_STATUS.RUNNING:
             if task.pid is not None:
-                try:
-                    proc = psutil.Process(task.pid)
-                    proc.kill()
-                except psutil.NoSuchProcess:
-                    pass
+                task.close()
+                logger.info(f"Killed {job_id} PID: {task.pid}")
+                task.status = TASK_STATUS.KILLED
+        else:
+            logger.info(
+                f"Task {job_id} is not running, cannot kill it. removing it from the task list."
+            )
+            scheduler.tasks.remove(task)
 
-        logger.info(f"Killed {job_id} PID: {task.pid}")
-        scheduler.tasks.remove(task)
-
-    flash(f"Killed job {job_id}!", "danger")
+    # flash(f"Killed job {job_id}!", "danger")
     return redirect("/")
 
 
@@ -615,17 +717,19 @@ if __name__ == "__main__":
     scheduler = Scheduler()
     scheduler.start()
 
-    print(f"Starting server at {config.server.host}:{config.server.port}\n"
-           "    please visit http://{config.server.host}:{config.server.port} for logs.")
+    print(
+        f"Starting server at {config.server.host}:{config.server.port}\n"
+        "    please visit http://{config.server.host}:{config.server.port} for logs."
+    )
 
     import textwrap
-    cmd_example = \
-        """
+
+    cmd_example = """
         To submit a task, you can use the following command to request 1 gpu with 30GB gpu memory and allow 10 seconds of time interval:
             taskrun -n 1 -m 30000 -t 10 python test.py
         """
     cmd_example = textwrap.dedent(cmd_example)
-    
+
     print(cmd_example)
 
     app.run(host=config.server.host, port=config.server.port, debug=False)

@@ -113,8 +113,6 @@ def main():
         return
 
     setup_gpu(args, config)
-    gpus_list = extract_gpus_list(args.gpus)
-    args.num_gpus = len(gpus_list) if args.gpus else args.num_gpus
     post_status_update(config, args, command)
 
 
