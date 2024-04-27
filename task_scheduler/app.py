@@ -135,6 +135,28 @@ def terminate_process_tree(pid, timeout=5):
 
 
 class Task:
+    """
+    Represents a task to be executed.
+
+    Attributes:
+        job_id (str): The ID of the job associated with the task.
+        path (str): The path to the directory where the task should be executed.
+        command (str): The command to be executed as part of the task.
+        num_gpus (int): The number of GPUs required for the task (default: 0).
+        gpus (list): A list of specific GPU IDs to be used for the task (default: None).
+        time_interval (int): The time interval (in seconds) between task executions (default: 0).
+        min_gpu_memory (int): The minimum GPU memory required for the task (default: None).
+        max_num_retries (int): The maximum number of retries allowed for the task (default: 0).
+        log_path (str): The path to the log file for the task (default: None).
+
+    Methods:
+        run(): Starts the execution of the task.
+        poll(): Checks the status of the task.
+        close(): Terminates the task and cleans up resources.
+        check_and_update_status(): Checks and updates the status of the task.
+        reset(): Resets the task to its initial state.
+    """
+
     def __init__(
         self,
         job_id,
@@ -171,6 +193,9 @@ class Task:
             self.log_path = log_path
 
     def run(self):
+        """
+        Starts the execution of the task.
+        """
         try:
             self.file_stream = open(self.log_path, "a")
             self.status = TASK_STATUS.RUNNING
@@ -189,11 +214,20 @@ class Task:
             logger.error(f"Failed to start task {self.job_id}: {e}")
 
     def poll(self):
+        """
+        Checks the status of the task.
+
+        Returns:
+            int: The return code of the task if it has completed, or None if it is still running.
+        """
         if self.pid:
             return self.proc.poll()
         return None
 
     def close(self):
+        """
+        Terminates the task and cleans up resources.
+        """
         if self.pid:
             terminate_process_tree(self.pid)
 
@@ -203,6 +237,12 @@ class Task:
             self.file_stream.close()
 
     def check_and_update_status(self):
+        """
+        Checks and updates the status of the task.
+
+        Returns:
+            str: The current status of the task.
+        """
         if self.pid:
             return_code = self.poll()
             if return_code is not None:
@@ -218,6 +258,9 @@ class Task:
         return self.status
 
     def reset(self):
+        """
+        Resets the task to its initial state.
+        """
         self.pid = None
         self.proc = None
         self.status = TASK_STATUS.WAITING
@@ -228,21 +271,66 @@ class Task:
 
 
 class Scheduler(Thread):
+    """
+    A class representing a task scheduler.
+
+    This class manages the scheduling and execution of tasks on available GPUs.
+
+    Attributes:
+        daemon (bool): Whether the scheduler thread is a daemon thread.
+        lock (Lock): A lock used for thread synchronization.
+        reserved_gpus (set): A set of GPU IDs that are currently reserved.
+        tasks (list): A list of Task objects representing the tasks to be scheduled.
+        gpus (list): A list of GPU objects representing the available GPUs.
+        enabled_gpus (dict): A dictionary mapping GPU IDs to their enabled status.
+        max_num_gpus (int): The maximum number of available GPUs.
+        last_run_time (float): The timestamp of the last task execution.
+        last_task (Task): The last task that was executed.
+        wait_time_interval (float): The time interval to wait before running the next task.
+
+    Methods:
+        run(): The main method of the scheduler thread.
+        check_and_run_tasks(): Checks and runs the tasks based on their status and availability of resources.
+        run_task(task, suitable_gpus): Runs a task on the specified GPUs.
+        check_task_statuses(): Checks the statuses of the tasks and performs necessary actions.
+        sort_tasks_by_status(): Sorts the tasks based on their status.
+        release_resources(task): Releases the resources used by a task.
+        update_waiting_task_positions(): Updates the positions of waiting tasks in the queue.
+        submit(path, command, time_interval, min_gpu_memory, *args, **kwargs): Submits a new task to the scheduler.
+        get_tasks_stats(): Retrieves the statistics of the tasks.
+        cleanup(): Removes finished tasks.
+    """
+
     def __init__(self) -> None:
         super().__init__()
         self.daemon = True
         self.lock = Lock()
 
-        self.used_gpus = set()
+        self.reserved_gpus = set()
         self.tasks = []
         # Enable all GPUs by default
         self.gpus = GPUtil.getGPUs()
         self.enabled_gpus = {int(gpu.id): True for gpu in self.gpus}
         self.max_num_gpus = len(self.gpus)
         self.last_run_time = time.time()
+        self.last_task = None
         self.wait_time_interval = -1
 
     def run(self):
+        """
+        Continuously runs the task scheduler.
+
+        This method runs in an infinite loop and performs the following actions:
+        1. Retrieves GPU information using GPUtil.getGPUs().
+        2. Checks and runs pending tasks.
+        3. Checks the statuses of running tasks.
+        4. Sleeps for the specified check interval before repeating the process.
+
+        Note: This method should be called to start the task scheduler.
+
+        Returns:
+            None
+        """
         while True:
             self.gpus = GPUtil.getGPUs()
             self.check_and_run_tasks()
@@ -251,12 +339,24 @@ class Scheduler(Thread):
             time.sleep(config.scheduler.check_interval)
 
     def check_and_run_tasks(self):
+        """
+        Checks and runs tasks based on certain conditions.
+
+        This method checks if there are any tasks to run and if the last task was run within a certain time interval.
+        If the conditions are met, it selects suitable GPUs for each task and runs them.
+
+        Returns:
+            None
+        """
         if not self.tasks:
             return
 
         # check if the last task was run time_interval seconds ago
         if time.time() - self.last_run_time < self.wait_time_interval:
             return
+        else:
+            # release the reserved gpus after waiting for time_interval
+            self.reserved_gpus.difference_update(self.last_task.used_gpus)
 
         avail_gpus = [
             (gpu, gpu.memoryFree) for gpu in self.gpus if self.enabled_gpus[int(gpu.id)]
@@ -272,7 +372,7 @@ class Scheduler(Thread):
                 start_time = task.start_time
                 diff_time = time.time() - start_time
                 task.uptime = str(datetime.timedelta(seconds=int(diff_time)))
-            
+
             if task.status == TASK_STATUS.WAITING:
                 logger.info(f"Task {task.job_id} is waiting for resource allocation!")
                 # Filter GPUs based on task-specific GPU ids and sufficient memory
@@ -281,29 +381,50 @@ class Scheduler(Thread):
                     for gpu, mem in avail_gpus
                     if int(gpu.id) in task.gpus  # Ensure GPU is in task's allowed list
                     and mem >= task.min_gpu_memory
-                    # and int(gpu.id) not in self.used_gpus
+                    and int(gpu.id) not in self.reserved_gpus
                 ]
 
                 if len(suitable_gpus) >= task.num_gpus:
                     self.run_task(task, suitable_gpus)
                     self.last_run_time = time.time()
+                    self.last_task = task
                     self.wait_time_interval = task.time_interval
                     break
 
     def run_task(self, task, suitable_gpus):
+        """
+        Runs a task on the specified GPUs.
+
+        Args:
+            task (Task): The task to be run.
+            suitable_gpus (list): A list of suitable GPUs for the task.
+
+        Returns:
+            None
+        """
         gpu_ids = [int(gpu.id) for gpu in suitable_gpus[: task.num_gpus]]
         logger.info(f"Allocating GPUs {gpu_ids} to task {task.job_id}.")
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
 
-        self.used_gpus.update(gpu_id for gpu_id in gpu_ids)
+        self.reserved_gpus.update(gpu_id for gpu_id in gpu_ids)
         task.used_gpus.update(gpu_id for gpu_id in gpu_ids)
 
         task.run()
-        # Give the command to run time_interval before running the next task
-        # e.g. to avoid running multiple tasks at the same time and to give the task some time to start up
-        # time.sleep(task.time_interval)
 
     def check_task_statuses(self):
+        """
+        Check the statuses of all tasks and perform necessary actions based on the status.
+
+        This method iterates through all tasks and checks their statuses. If a task is in the
+        {TASK_STATUS.DONE, TASK_STATUS.ERROR, TASK_STATUS.KILLED} status, it releases the resources
+        used by the task. If a task is in the TASK_STATUS.ERROR status and has remaining retries,
+        it resets the task, updates the job ID, and adds it back to the list of tasks for retrying.
+        If a task is in the TASK_STATUS.ERROR status and has no more retries left, it logs an error
+        message indicating that the task has failed with no more retries left.
+
+        Returns:
+            None
+        """
         all_tasks_completed = all(
             task.status in {TASK_STATUS.DONE, TASK_STATUS.ERROR, TASK_STATUS.KILLED}
             for task in self.tasks
@@ -320,6 +441,7 @@ class Scheduler(Thread):
             }:
                 status = task.check_and_update_status()
                 if status in {TASK_STATUS.DONE, TASK_STATUS.ERROR, TASK_STATUS.KILLED}:
+                    # Release the resources used by the task including gpus, processes, etc.
                     self.release_resources(task)
 
                 if status == TASK_STATUS.ERROR:
@@ -337,12 +459,28 @@ class Scheduler(Thread):
                         )
 
     def sort_tasks_by_status(self):
+        """
+        Sorts the tasks list based on the priority of their statuses.
+
+        The sorting priority is defined by the following mapping:
+        - TASK_STATUS.DONE: 1
+        - TASK_STATUS.ERROR: 2
+        - TASK_STATUS.RUNNING: 3
+        - TASK_STATUS.WAITING: 4
+        - TASK_STATUS.KILLED: 5
+
+        After sorting, the tasks list will be rearranged in ascending order
+        based on the priority of their statuses.
+
+        Returns:
+            None
+        """
         # Define a dictionary to map statuses to sorting priorities
         priority = {
             TASK_STATUS.DONE: 1,
             TASK_STATUS.ERROR: 2,
             TASK_STATUS.RUNNING: 3,
-            TASK_STATUS.WAITING: 3,
+            TASK_STATUS.WAITING: 4,
             TASK_STATUS.KILLED: 5,
         }
 
@@ -350,11 +488,28 @@ class Scheduler(Thread):
         self.tasks.sort(key=lambda task: priority[task.status])
 
     def release_resources(self, task):
-        self.used_gpus.difference_update(task.used_gpus)
+        """
+        Releases the resources used by a task.
+
+        Args:
+            task (Task): The task object for which resources need to be released.
+        """
+        self.reserved_gpus.difference_update(task.used_gpus)
         task.used_gpus.clear()
+        # terminate the process
         task.close()
 
     def update_waiting_task_positions(self):
+        """
+        Updates the position in the queue for tasks in waiting status.
+
+        This method iterates through the list of tasks and updates the position_in_queue
+        attribute for tasks that are in waiting status. The position_in_queue is incremented
+        for each task in waiting status, starting from 1.
+
+        Returns:
+            None
+        """
         waiting_count = 0  # Counter for tasks in waiting status
         for task in self.tasks:
             if task.status == TASK_STATUS.WAITING:
@@ -362,6 +517,21 @@ class Scheduler(Thread):
                 task.position_in_queue = waiting_count
 
     def submit(self, path, command, time_interval, min_gpu_memory, *args, **kwargs):
+        """
+        Submits a job to the task scheduler.
+
+        Args:
+            path (str): The path to the job script or executable.
+            command (str): The command to execute the job.
+            time_interval (int): The time interval in seconds between job executions.
+            min_gpu_memory (int): The minimum required GPU memory for the job.
+            *args: Additional positional arguments.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            str: A message indicating that the job has been submitted.
+
+        """
         timestamp = datetime.datetime.now().isoformat()
         job_id = f"{HOSTNAME}_{timestamp}"
         gpus = kwargs["gpus"]
@@ -381,6 +551,19 @@ class Scheduler(Thread):
         return f"Job {task.job_id} is submitted!"
 
     def get_tasks_stats(self):
+        """
+        Retrieves the statistics of all tasks.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents the statistics of a task.
+            Each dictionary contains the following keys:
+                - "ID": The job ID of the task.
+                - "uptime": The uptime of the task.
+                - "gpus": The GPUs used by the task.
+                - "path": The path of the task.
+                - "command": The command executed by the task.
+                - "status": The status of the task.
+        """
         self.update_waiting_task_positions()
         stats = []
         for task in self.tasks:
@@ -409,10 +592,15 @@ class Scheduler(Thread):
                 "status": status,
             }
             stats.append(item)
+
         return stats
 
     def cleanup(self):
-        "Remove finished tasks"
+        """
+        Remove finished tasks
+
+        This method removes tasks from the task list that have a status of DONE, ERROR, or KILLED.
+        """
         new_tasks = []
         for task in self.tasks:
             if task.status not in {
@@ -436,6 +624,18 @@ class LoginForm(FlaskForm):
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    """
+    Perform user login.
+
+    This function handles the login process for users. It validates the login form,
+    checks the credentials against the stored user data, and logs in the user if the
+    credentials are valid.
+
+    Returns:
+        If the login is successful, the function redirects the user to the index page.
+        If the login fails, the function displays a flash message and renders the login page.
+
+    """
     form = LoginForm()
     if form.validate_on_submit():
         username = form.username.data
@@ -460,6 +660,21 @@ def index():
 
 
 async def stream_text_file(filename, idle_timeout=30):
+    """
+    Asynchronously streams the contents of a text file.
+
+    Args:
+        filename (str): The path to the text file.
+        idle_timeout (int, optional): The maximum time (in seconds) to wait for new lines
+            before considering the stream idle. Defaults to 30.
+
+    Yields:
+        bytes: The encoded lines of the text file.
+
+    Raises:
+        TimeoutError: If the readline operation times out.
+
+    """
     async with aiofiles.open(filename, mode="r") as file:
         await file.seek(0)  # Move to the beginning of the file
         start_idle_time = None  # Track start of idle time due to empty lines
@@ -494,6 +709,17 @@ async def stream_text_file(filename, idle_timeout=30):
 
 
 def stream_file(filename, stop_event):
+    """
+    Streams the contents of a text file asynchronously.
+
+    Args:
+        filename (str): The path to the text file to be streamed.
+        stop_event (threading.Event): An event object used to signal the stop of streaming.
+
+    Yields:
+        str: Each line of the text file.
+
+    """
     q = queue.Queue()
 
     def run_async_loop():
@@ -538,7 +764,16 @@ def stream(job_id):
 
 
 @app.route("/view_log/<job_id>")
-def read_log(job_id):
+def read_log(job_id: str):
+    """
+    Read the log file for a given job ID.
+
+    Args:
+        job_id (str): The ID of the job.
+
+    Returns:
+        render_template: A template for displaying the log file.
+    """
     if not os.path.exists(
         os.path.join(os.path.dirname(__file__), f"outputs/{job_id}.log")
     ):
@@ -546,39 +781,19 @@ def read_log(job_id):
     return render_template("log.html", title="Task Scheduler", job_id=job_id)
 
 
-# def try_terminate_then_kill(pid, timeout=10):
-#     """
-#     Tries to terminate the process with the given PID and kills it if it doesn't exit within the timeout period.
-
-#     Args:
-#         pid (int): Process ID of the task to terminate.
-#         timeout (int): Time in seconds to wait for the process to exit gracefully before killing it.
-
-#     Returns:
-#         None
-#     """
-#     try:
-#         proc = psutil.Process(pid)
-#         # Try to terminate the process
-#         proc.terminate()
-#         # Wait for the process to terminate
-#         try:
-#             proc.wait(timeout=timeout)
-#             logger.info(f"Process {pid} terminated gracefully.")
-#         except psutil.TimeoutExpired:
-#             # If the process is still alive after the timeout, kill it
-#             proc.kill()
-#             logger.warning(f"Process {pid} was killed after timeout.")
-#     except psutil.NoSuchProcess:
-#         logger.error(f"Process {pid} not found!")
-#     except Exception as e:
-#         logger.error(f"An error occurred while trying to terminate process {pid}: {str(e)}")
-
-
 @app.route("/kill_job/<job_id>")
-def kill_job(job_id):
+def kill_job(job_id: str):
+    """
+    Kills a job with the given job_id.
+
+    Args:
+        job_id (str): The ID of the job to be killed.
+
+    Returns:
+        redirect: A redirect response to the root page ("/").
+    """
     flag = False
-    for task_idx, task in enumerate(scheduler.tasks):
+    for task in scheduler.tasks:
         if task.job_id == job_id:
             flag = True
             break
@@ -606,6 +821,19 @@ def get_gpus_info():
 
 @app.route("/update_enabled_gpus", methods=["GET", "POST"])
 def update_enabled_gpus():
+    """
+    Updates the status of enabled GPUs based on the POST request data.
+
+    If the request method is POST, it retrieves the GPU ID and enabled status from the form data.
+    It then updates the `scheduler.enabled_gpus` dictionary with the new status for the specified GPU.
+    A flash message is displayed to indicate the status change, and a log message is recorded.
+    Finally, it redirects the user to the "/gpus_info" page.
+
+    If the request method is not POST, it simply redirects the user to the "/gpus_info" page.
+
+    Returns:
+        A redirect response to the "/gpus_info" page.
+    """
     if request.method == "POST":
         gpu_id = int(request.form["gpu_id"])
         enabled = request.form["enabled"] == "false"
@@ -629,6 +857,18 @@ def cleanup():
 
 @app.route("/api/update_gpus_table")
 def update_gpus_table():
+    """
+    Retrieves GPU information and returns it in a structured format.
+
+    Returns:
+        dict: A dictionary containing the GPU information.
+            The dictionary has a "results" key, which maps to a list of dictionaries.
+            Each dictionary in the list represents a GPU and contains the following keys:
+                - "gpu_id": The ID of the GPU.
+                - "memory": The memory usage of the GPU in the format "<used_memory>/total_memory".
+                - "utilize": The GPU utilization as a percentage.
+                - "enabled": A boolean indicating whether the GPU is enabled or not.
+    """
     data = {"results": []}
     GPUs = GPUtil.getGPUs()
 
@@ -648,6 +888,13 @@ def update_gpus_table():
 
 @app.route("/api/update_processes_table")
 def update_processes_table():
+    """
+    Updates the processes table based on the search, sorting, and pagination parameters provided in the request.
+
+    Returns:
+        dict: A dictionary containing the updated data for the processes table, including the filtered processes,
+        the total number of filtered records, the total number of records, and the draw value from the request.
+    """
     processes = scheduler.get_tasks_stats()
     total_num_processes = len(processes)
 
@@ -689,6 +936,12 @@ def update_processes_table():
 
 @app.route("/update_process", methods=["GET", "POST"])
 def update_process():
+    """
+    Update the process with the provided parameters.
+
+    Returns:
+        str: A message indicating the status of the process update.
+    """
     path = request.form["path"]
     command = request.form["command"]
     num_gpus = int(request.form["num_gpus"])
