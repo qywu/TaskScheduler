@@ -391,33 +391,34 @@ def index():
     return render_template("server_table.html", title="Task Scheduler")
 
 
-async def stream_text_file(filename, max_empty_lines=100):
+async def stream_text_file(filename, idle_timeout=30):
     async with aiofiles.open(filename, mode="r") as file:
         await file.seek(0)  # Move to the beginning of the file
-        empty_line_count = 0  # Counter for consecutive empty lines
+        start_idle_time = None  # Track start of idle time due to empty lines
+        
         while True:
             try:
                 # Wait for readline with a timeout
                 line = await asyncio.wait_for(
                     file.readline(), config.server.stream_timeout
                 )
+                
                 if not line:
-                    empty_line_count += (
-                        1  # Increment counter when an empty line is found
-                    )
-                    if empty_line_count >= max_empty_lines:
-                        logger.info(f"Reached max empty lines in {filename}")
-                        break  # Break if the max count of empty lines is reached
+                    if start_idle_time is None:
+                        start_idle_time = asyncio.get_running_loop().time()  # Mark start of idle time
+                    elif (asyncio.get_running_loop().time() - start_idle_time) > idle_timeout:
+                        logger.info(f"Idle timeout reached while reading {filename}")
+                        break  # Break if the idle timeout is exceeded
                     await asyncio.sleep(0.1)  # Sleep briefly if line is empty
                     continue
-                # Reset empty line counter on reading data
-                empty_line_count = 0
+                
+                # Reset idle timer on reading data
+                start_idle_time = None
                 yield line.encode("utf-8")  # Encode line for streaming
             except asyncio.TimeoutError:
                 # Break the loop if readline times out
                 logger.info(f"Timeout reading {filename}")
                 break
-
 
 def stream_file(filename, stop_event):
     q = queue.Queue()
