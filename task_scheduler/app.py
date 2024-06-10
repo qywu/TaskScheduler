@@ -159,6 +159,7 @@ class Task:
 
     def __init__(
         self,
+        name,
         job_id,
         path,
         command,
@@ -169,6 +170,7 @@ class Task:
         max_num_retries=0,
         log_path: str = None,
     ) -> None:
+        self.name = name
         self.job_id = job_id
         self.path = path
         self.command = command
@@ -312,8 +314,9 @@ class Scheduler(Thread):
         self.gpus = GPUtil.getGPUs()
         self.enabled_gpus = {int(gpu.id): True for gpu in self.gpus}
         self.max_num_gpus = len(self.gpus)
-        self.last_run_time = time.time()
-        self.last_task = None
+        # self.last_run_time = time.time()
+        # self.last_task = None
+        self.reserved_tasks = []
         self.wait_time_interval = -1
 
     def run(self):
@@ -351,12 +354,17 @@ class Scheduler(Thread):
         if not self.tasks:
             return
 
-        # check if the last task was run time_interval seconds ago
-        if time.time() - self.last_run_time < self.wait_time_interval:
-            return
-        else:
-            # release the reserved gpus after waiting for time_interval
-            self.reserved_gpus.difference_update(self.last_task.used_gpus)
+        # release the reserved gpus after waiting for time_interval
+        new_reserved_tasks = []
+        new_reserved_gpus = set()
+        for task in self.reserved_tasks:
+            if task.status == TASK_STATUS.RUNNING:
+                if not (time.time() - task.start_time > task.time_interval):
+                    new_reserved_tasks.append(task)
+                    new_reserved_gpus.update(task.used_gpus)
+        
+        self.reserved_gpus = new_reserved_gpus
+        self.reserved_tasks = new_reserved_tasks
 
         avail_gpus = [
             (gpu, gpu.memoryFree) for gpu in self.gpus if self.enabled_gpus[int(gpu.id)]
@@ -386,9 +394,7 @@ class Scheduler(Thread):
 
                 if len(suitable_gpus) >= task.num_gpus:
                     self.run_task(task, suitable_gpus)
-                    self.last_run_time = time.time()
-                    self.last_task = task
-                    self.wait_time_interval = task.time_interval
+                    self.reserved_tasks.append(task)
                     break
 
     def run_task(self, task, suitable_gpus):
@@ -516,7 +522,7 @@ class Scheduler(Thread):
                 waiting_count += 1
                 task.position_in_queue = waiting_count
 
-    def submit(self, path, command, time_interval, min_gpu_memory, *args, **kwargs):
+    def submit(self, name, path, command, time_interval, min_gpu_memory, **kwargs):
         """
         Submits a job to the task scheduler.
 
@@ -533,12 +539,17 @@ class Scheduler(Thread):
 
         """
         timestamp = datetime.datetime.now().isoformat()
-        job_id = f"{HOSTNAME}_{timestamp}"
+        if not name:
+            job_id = f"{HOSTNAME}_{timestamp}"
+        else:
+            job_id = f"{HOSTNAME}_{timestamp}_{name}"
+        
         gpus = kwargs["gpus"]
         if not gpus or len(gpus) == 0:
             gpus = list(range(self.max_num_gpus))
 
         task = Task(
+            name=name,
             job_id=job_id,
             path=path,
             command=command,
@@ -942,6 +953,7 @@ def update_process():
     Returns:
         str: A message indicating the status of the process update.
     """
+    name = request.form["name"]
     path = request.form["path"]
     command = request.form["command"]
     num_gpus = int(request.form["num_gpus"])
@@ -955,6 +967,7 @@ def update_process():
     if password != config.user["admin"]["password"]:
         return "Invalid password!"
     message = scheduler.submit(
+        name=name,
         path=path,
         command=command,
         time_interval=time_interval,
@@ -972,7 +985,7 @@ if __name__ == "__main__":
 
     print(
         f"Starting server at {config.server.host}:{config.server.port}\n"
-        "    please visit http://{config.server.host}:{config.server.port} for logs."
+        f"    please visit http://{config.server.host}:{config.server.port} for logs."
     )
 
     import textwrap

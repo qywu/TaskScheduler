@@ -42,6 +42,12 @@ def parse_arguments(config):
         default=config.scheduler.max_num_retries,
         help="maximum number of retries",
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default="",
+        help="name of the process to be run",
+    )
 
     # Parse the arguments
     args, rest = parser.parse_known_args()
@@ -87,6 +93,7 @@ def extract_gpus_list(gpus):
 def post_status_update(config, args, command):
     url = f"http://127.0.0.1:{config.server.port}/update_process"
     myobj = {
+        "name": args.name,
         "path": os.getcwd(),
         "command": command,
         "num_gpus": args.num_gpus,
